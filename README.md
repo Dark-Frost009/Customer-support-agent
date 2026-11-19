@@ -1,8 +1,10 @@
 # Customer Support Agent
 
+[![CI](https://github.com/Dark-Frost009/Customer-support-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Dark-Frost009/Customer-support-agent/actions/workflows/ci.yml)
+
 A production-style customer support backend for an Indian e-commerce store. Customers chat in plain language; an OpenAI model looks up orders, answers policy questions, cancels orders and files returns through tools — while **every business rule is enforced in Python, not in the prompt**.
 
-Built with FastAPI, raw `sqlite3`, the OpenAI SDK (function calling, no LangChain), and Pydantic v2. 50 offline tests cover the guardrails.
+Built with FastAPI, raw `sqlite3`, the OpenAI SDK (function calling, no LangChain), and Pydantic v2. 65 offline tests cover the guardrails, a real-model eval suite checks the LLM's behaviour, and it ships as a Docker image with CI on every push.
 
 ---
 
@@ -18,7 +20,8 @@ Most LLM agent demos trust the model to follow its instructions. This one assume
 | **Error budget** — repeated failures go to a human | If the same tool fails twice in a session, Python creates the escalation itself. |
 | **Return policy** — 30-day window, non-returnable items, 7-day defect reports | Checked in `guardrails.py` before any write. |
 | **No raw SQL from the LLM** | Tools are plain Python functions with fixed, parameterised queries. The model only supplies validated, typed values. |
-| **Out-of-scope requests** | The one judgement only the model can make — handled by the system prompt plus an `escalate_to_human` tool. |
+| **Resilience** — OpenAI timeouts, rate limits and outages | Each call has a timeout and up to 3 retries with exponential back-off. If the model still fails, the customer gets a fallback reply — and if a cancel, return or escalation already went through that turn, Python tells them so, so they don't retry and duplicate it. |
+| **Out-of-scope requests** | The one judgement only the model can make — handled by the system prompt plus an `escalate_to_human` tool, and measured by the eval suite. |
 
 ## Architecture
 
@@ -52,7 +55,11 @@ support_agent/
 │   ├── seed.py         # Deterministic demo data with test scenarios
 │   ├── schema.sql      # Database schema (money stored as integer paise)
 │   └── policy.txt      # Store policy (source for search_policy)
-├── tests/              # 50 offline tests (no API key needed)
+├── tests/              # 65 offline tests (no API key needed)
+├── evals/              # Real-model eval suite (17 scripted conversations)
+├── Dockerfile          # Production image (non-root, healthcheck, data volume)
+├── docker-compose.yml
+├── .github/workflows/  # CI: tests on Python 3.11 + 3.12, Docker build + health check
 ├── pytest.ini
 └── requirements.txt
 ```
@@ -73,6 +80,15 @@ python app/rag.py build          # embed policy.txt into the vector index
 ```
 
 ## Run
+
+**With Docker** (no Python setup needed):
+
+```powershell
+echo OPENAI_API_KEY=sk-... > .env
+docker compose up --build
+```
+
+The container seeds demo data and builds the policy index on first start; data is kept in a volume across restarts. Then open http://127.0.0.1:8000/docs.
 
 **Terminal chat** (quickest way to try it):
 
@@ -119,14 +135,37 @@ The tokens are a development stand-in; replace `get_current_customer` in `main.p
 python -m pytest
 ```
 
-50 tests run in about a second, fully offline: the chat model is a scripted fake that deliberately misbehaves (confirming in the same turn, looping forever, injecting `customer_id`) to show that Python stops it. Each test gets a freshly seeded temporary database.
+65 tests run in about a second, fully offline: the chat model is a scripted fake that deliberately misbehaves (confirming in the same turn, looping forever, injecting `customer_id`) to show that Python stops it. Each test gets a freshly seeded temporary database. CI runs them on every push.
 
 | File | Covers |
 |---|---|
 | `test_guardrails.py` | ₹2,000 boundary, error budget, confirmation tokens |
 | `test_tools.py` | Ownership and enumeration resistance, every return rule, cancellation, policy search |
 | `test_agent.py` | Confirmation enforced against an eager model, loop cap, session binding |
-| `test_api.py` | Auth, `customer_id` in body rejected, session hijacking (403), model outage (503) |
+| `test_api.py` | Auth, `customer_id` in body rejected, session hijacking (403), unexpected errors (503) |
+| `test_resilience.py` | SDK retries on 503s, timeouts give fallback replies, completed actions are reported, history stays valid |
+| `test_evals_harness.py` | The eval scorer itself: good behaviour passes, leaks and skipped confirmations fail |
+
+## Evals (real model)
+
+Unit tests prove the guardrails hold against a fake model. Evals measure how the **real** model behaves inside them: 17 scripted conversations, each on a fresh database, scored on facts — database state, tools called, and what replies contain or must never contain.
+
+```powershell
+python evals/run_evals.py              # all cases (costs a few rupees on gpt-4o-mini)
+python evals/run_evals.py --repeat 3   # models are non-deterministic; see per-case pass rates
+python evals/run_evals.py --model gpt-4o
+python evals/run_evals.py --list
+```
+
+| Area | What's checked |
+|---|---|
+| Confirmation | "Can I cancel?" doesn't cancel; "yes" does; "no" doesn't |
+| Refunds | ₹599 approved; ₹4,499 escalated and never approved; expired and non-returnable items refused |
+| Security | Another customer's order, fake "admin mode", claimed manager authority, bank details in chat |
+| Policy | Return window and shipping fees answered from `search_policy` |
+| Escalation | Account changes and requests for a human create a ticket |
+
+Results are printed and saved to `evals/results/` as JSON.
 
 ## Design decisions
 
@@ -139,6 +178,7 @@ python -m pytest
 ## Limitations and next steps
 
 - Sessions are in memory — use Redis or a DB table before running multiple workers.
+- Evals aren't in CI yet (they need an API key secret and cost money per run).
 - Demo bearer tokens instead of real authentication.
 - Out-of-scope detection depends on the model's judgement.
 - No rate limiting yet.

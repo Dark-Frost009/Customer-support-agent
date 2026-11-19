@@ -17,3 +17,5 @@ __pycache__/
 
 # Editor
 .vscode/
+# Eval run reports
+evals/results/

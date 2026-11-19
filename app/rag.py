@@ -144,7 +144,11 @@ def openai_embedder(model: str = EMBEDDING_MODEL) -> Embedder:
     """Default embedder using the raw OpenAI SDK. Reads OPENAI_API_KEY from env."""
     from openai import OpenAI  # imported lazily so offline tests don't need the package
 
-    client = OpenAI()
+    # Same resilience settings as the chat client (see agent.py).
+    client = OpenAI(
+        timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30")),
+        max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "3")),
+    )
 
     def embed(texts: Sequence[str]) -> list[list[float]]:
         resp = client.embeddings.create(model=model, input=list(texts))

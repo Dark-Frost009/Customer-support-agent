@@ -174,3 +174,5 @@ class ChatResponse(BaseModel):
     escalated: bool = False
     escalation_id: int | None = None
     tools_called: list[str] = Field(default_factory=list)
+    # True when the model was unavailable and the reply is a safe fallback.
+    degraded: bool = False

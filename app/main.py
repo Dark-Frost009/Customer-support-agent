@@ -97,7 +97,7 @@ def chat(req: ChatRequest, customer_id: int = Depends(get_current_customer)) -> 
 
     try:
         out = agent.respond(session, req.message)
-    except Exception as exc:  # OpenAI outage, rate limit, bad key, etc.
+    except Exception as exc:  # unexpected bug; OpenAI failures are handled inside the agent
         log.exception("Agent failure for session %s", session.session_id)
         # Drop the unanswered user message so a retry doesn't send it twice.
         if session.messages and session.messages[-1].get("role") == "user":
@@ -113,6 +113,7 @@ def chat(req: ChatRequest, customer_id: int = Depends(get_current_customer)) -> 
         escalated=out.escalation_id is not None,
         escalation_id=out.escalation_id,
         tools_called=out.tools_called,
+        degraded=out.degraded,
     )
 
 from fastapi.responses import RedirectResponse

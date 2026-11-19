@@ -22,6 +22,9 @@ Where safety lives
   "can I cancel?" can't cancel anything on its own.
 * The tool loop is capped (MAX_TOOL_ROUNDS). A model that keeps calling tools
   without answering is escalated rather than allowed to spin and burn tokens.
+* OpenAI failures (after the SDK's retries) never strand the customer: they
+  get a fallback reply, and if a cancel/return/escalation already happened in
+  this turn, the fallback says so, built from the tool results by Python.
 * "Out of scope" is a judgement call only the model can make from free text,
   so it is handled by the prompt + the escalate_to_human tool. Everything that
   *can* be checked mechanically is checked in Python.
@@ -29,13 +32,16 @@ Where safety lives
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from db import DB_PATH, get_db
+import openai
+
+from db import DB_PATH, format_paise, get_db
 from guardrails import REFUND_LIMIT_PAISE, ConfirmationGate, ErrorTracker
 from schemas import EscalateArgs
 from tools import dispatch_tool, escalate_to_human, openai_tool_specs
@@ -44,6 +50,15 @@ MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TEMPERATURE: float = 0.2          # support answers should be consistent, not creative
 MAX_TOOL_ROUNDS: int = 6          # model calls per customer message before we give up
 MAX_HISTORY_MESSAGES: int = 40    # keep context (and cost) bounded on long chats
+
+# Resilience. The SDK retries connection errors, timeouts, 429s and 5xx with
+# exponential back-off; these bound how long a customer can be kept waiting.
+OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+OPENAI_MAX_RETRIES: int = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+
+WRITE_TOOLS = frozenset({"cancel_order", "request_return", "escalate_to_human"})
+
+log = logging.getLogger("support_agent.agent")
 
 SYSTEM_PROMPT_TEMPLATE = """You are the customer support assistant for an Indian online store.
 You are talking to {customer_name}, who is already signed in. You can only see and act on
@@ -60,7 +75,13 @@ How to work:
   whether it is approved or sent for review) and ask the customer to confirm. Only when they
   clearly say yes in their next message, call the same tool again with the same arguments
   plus the token. If they say no or change anything, do not use the token.
+- As soon as the customer asks to cancel or return something, or asks whether they can, call
+  the tool straight away without a token to get the preview. Don't build your own summary
+  with get_order first: that makes the customer confirm twice.
 - A question like "Can I cancel order 5?" is not a yes. Preview it, explain, and ask.
+- Never describe an item as eligible for return if get_order shows return_window_open is false
+  or request_return refuses it. Say plainly that it isn't eligible and why (for example, the
+  30-day window from delivery has passed).
 - request_return decides on its own whether a refund is approved or sent to a human. Report
   its decision as-is. Refunds above Rs. {limit_rupees:,} are never approved by you; if the
   tool escalated, say a team member will review it within 1-2 business days.
@@ -68,8 +89,10 @@ How to work:
   with the same arguments. If the result says the case was escalated, stop and tell the
   customer a human will follow up.
 - Call escalate_to_human when the request is outside what these tools cover (e.g. account
-  changes, payment disputes, complaints about staff, legal or safety issues), when the
-  customer disputes a policy decision, or when they ask for a human.
+  changes, payment disputes, complaints about staff, legal or safety issues), or when the
+  customer disputes a policy decision.
+- If the customer asks for a human, call escalate_to_human immediately. Don't ask them why
+  first; use whatever reason they gave, or "Customer asked to speak to a person".
 - Never ask for card numbers, bank details, OTPs or passwords in chat. For cash-on-delivery
   refunds, tell them the team will share a secure form.
 - Be concise, warm and plain-spoken. Use the customer's first name occasionally.
@@ -131,8 +154,9 @@ class ChatClient(Protocol):
 
 
 def default_client() -> ChatClient:
-    from openai import OpenAI  # reads OPENAI_API_KEY from the environment
-    return OpenAI()
+    # Reads OPENAI_API_KEY from the environment. timeout bounds each attempt;
+    # max_retries uses the SDK's exponential back-off for transient errors.
+    return openai.OpenAI(timeout=OPENAI_TIMEOUT_SECONDS, max_retries=OPENAI_MAX_RETRIES)
 
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +167,48 @@ class AgentReply:
     reply: str
     tools_called: list[str]
     escalation_id: int | None
+    degraded: bool = False   # True when the model failed and Python wrote the reply
+
+
+UNAVAILABLE_REPLY = (
+    "I'm sorry, I'm having trouble responding right now. Please try again in a minute. "
+    "Nothing has been changed on your account."
+)
+
+
+def _describe_action(name: str, data: dict[str, Any]) -> str | None:
+    """Plain-language summary of a completed action, written by Python, not the model."""
+    if name == "cancel_order":
+        return (f"Order #{data['order_id']} has been cancelled. Your refund of "
+                f"{data['refund']['display']} will reach your original payment method "
+                "within 5-7 business days.")
+    if name == "request_return":
+        if data.get("status") == "approved":
+            return (f"Your return for {data['product_name']} (return #{data['return_id']}) is "
+                    f"approved. The refund of {data['refund']['display']} is issued within "
+                    "5-7 business days after the item passes inspection.")
+        return (f"Your return request for {data['product_name']} (return #{data['return_id']}) "
+                "has been sent to our team for review. They'll respond within 1-2 business days.")
+    if name == "escalate_to_human":
+        return (f"Your request has been passed to our support team (ticket "
+                f"#{data['escalation_id']}). Someone will respond within 1-2 business days.")
+    return None
+
+
+def fallback_reply(actions: list[tuple[str, dict[str, Any]]]) -> str:
+    """
+    Reply used when the model fails mid-turn.
+
+    If an action already went through, the customer must be told, or they may
+    retry and, for example, file a second return. So the summary is built
+    from the tool results themselves rather than left to the model.
+    """
+    lines = [d for name, data in actions if (d := _describe_action(name, data))]
+    if not lines:
+        return UNAVAILABLE_REPLY
+    return ("I'm sorry, I'm having trouble finishing my reply, but here's what has been done:\n"
+            + "\n".join(f"- {line}" for line in lines)
+            + "\nPlease check back in a minute if you need anything else.")
 
 
 class SupportAgent:
@@ -205,6 +271,28 @@ class SupportAgent:
             ]
         return out
 
+    def _degraded(
+        self,
+        session: Session,
+        completed: list[tuple[str, dict[str, Any]]],
+        tools_called: list[str],
+        escalation_id: int | None,
+    ) -> AgentReply:
+        if not tools_called and session.messages and session.messages[-1]["role"] == "user":
+            # Nothing happened this turn: drop the unanswered message so a
+            # retry doesn't send it twice.
+            session.messages.pop()
+        else:
+            # Tool calls already in history need a closing assistant message,
+            # or the next request to the API would be malformed.
+            session.messages.append({"role": "assistant", "content": fallback_reply(completed)})
+        return AgentReply(
+            reply=fallback_reply(completed),
+            tools_called=tools_called,
+            escalation_id=escalation_id,
+            degraded=True,
+        )
+
     # ------------------------------------------------------------------ #
     def respond(self, session: Session, user_message: str) -> AgentReply:
         # One request at a time per session: concurrent messages would
@@ -220,15 +308,22 @@ class SupportAgent:
         system = {"role": "system", "content": self._system_prompt(session.customer_id)}
         tools_called: list[str] = []
         new_escalation: int | None = None
+        completed: list[tuple[str, dict[str, Any]]] = []  # write actions done this turn
 
         for _ in range(MAX_TOOL_ROUNDS):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[system, *session.messages],
-                tools=self.tool_specs,
-                tool_choice="auto",
-                temperature=TEMPERATURE,
-            )
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[system, *session.messages],
+                    tools=self.tool_specs,
+                    tool_choice="auto",
+                    temperature=TEMPERATURE,
+                )
+            except openai.APIError:
+                # Reached only after the SDK's own retries are exhausted
+                # (timeout, rate limit, outage, bad key...).
+                log.exception("OpenAI call failed for session %s", session.session_id)
+                return self._degraded(session, completed, tools_called, new_escalation)
             msg = response.choices[0].message
             session.messages.append(self._assistant_to_dict(msg))
 
@@ -253,6 +348,9 @@ class SupportAgent:
                     user_turn=session.user_turn,
                     db_path=self.db_path,
                 )
+                if (result.ok and name in WRITE_TOOLS and isinstance(result.data, dict)
+                        and not result.data.get("requires_confirmation")):
+                    completed.append((name, result.data))
                 if result.escalation_id is not None:
                     new_escalation = result.escalation_id
                     session.escalation_ids.append(result.escalation_id)

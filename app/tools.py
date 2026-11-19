@@ -24,6 +24,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
+import openai
 from pydantic import BaseModel, ValidationError
 
 import rag
@@ -188,6 +189,15 @@ def search_policy(customer_id: int, args: SearchPolicyArgs, *, db_path: DbPath =
         passages = rag.search_policy(args.query, args.top_k)
     except rag.PolicyIndexError as exc:
         raise GuardrailViolation("POLICY_INDEX_UNAVAILABLE", str(exc)) from exc
+    except openai.APIError as exc:
+        # Embedding the query failed even after retries. Report it as a tool
+        # error so the model can apologise or escalate, instead of crashing
+        # the whole request.
+        raise GuardrailViolation(
+            "POLICY_SEARCH_UNAVAILABLE",
+            "Policy search is temporarily unavailable. Don't guess the policy; "
+            "apologise, and offer to escalate if the customer needs an answer now.",
+        ) from exc
     return {"passages": passages}
 
 
