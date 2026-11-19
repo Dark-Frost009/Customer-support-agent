@@ -1,0 +1,97 @@
+STORE POLICY
+Last updated: 1 November 2026
+ 
+All prices are in Indian Rupees (INR) and include GST unless stated otherwise.
+ 
+------------------------------------------------------------
+1. ORDER PROCESSING AND SHIPPING
+------------------------------------------------------------
+- Orders are processed within 1-2 business days of payment confirmation.
+  Orders placed after 6:00 PM IST, or on Sundays and public holidays, are
+  processed on the next business day.
+- Estimated delivery times after dispatch:
+    Metro cities (Delhi, Mumbai, Kolkata, Chennai, Bengaluru, Hyderabad):
+      2-4 business days
+    Rest of India (tier 2 and tier 3 cities):
+      4-7 business days
+    Remote areas (North-East, J&K, Andaman & Nicobar, Lakshadweep):
+      7-10 business days
+- Shipping charges:
+    Orders of Rs. 999 or more: free shipping
+    Orders below Rs. 999: flat Rs. 79 shipping fee
+- A tracking number is shared once the order status changes to "shipped".
+- Delivery estimates are not guarantees. Delays caused by weather, strikes,
+  or courier disruptions are outside our control.
+ 
+------------------------------------------------------------
+2. ORDER CANCELLATION
+------------------------------------------------------------
+- An order can be cancelled for a full refund while its status is
+  "processing".
+- Once an order is "shipped", it can no longer be cancelled. The customer
+  may refuse delivery or request a return after delivery under the return
+  policy below.
+- Refunds for cancelled prepaid orders go back to the original payment
+  method within 5-7 business days.
+ 
+------------------------------------------------------------
+3. RETURN POLICY
+------------------------------------------------------------
+- Return window: 30 days from the delivery date. Requests made after 30 days
+  are not eligible for a return or refund.
+- Items must be unused, undamaged, and in original packaging with all tags
+  and accessories included.
+- Only orders with status "delivered" can be returned.
+- Items marked non-returnable on the product page (e.g. innerwear, opened
+  personal-care items, gift cards, and final-sale items) cannot be returned
+  unless they arrive defective or damaged.
+ 
+Footwear:
+- Shoes must be unworn to be eligible for return. Shoes may be tried on
+  indoors on a clean surface only.
+- Shoes showing signs of wear (scuffed soles, dirt, creasing from use, odour,
+  or missing original box) will be rejected, and the customer may be asked to
+  collect them at their own cost.
+ 
+Defective, damaged, or wrong items:
+- Report within 7 days of delivery with clear photos of the item and
+  packaging. We will arrange a free pickup and offer a replacement or a full
+  refund.
+ 
+------------------------------------------------------------
+4. REFUNDS
+------------------------------------------------------------
+- Refund amount = price paid for the returned item(s). Original shipping fees
+  are refunded only when the return is due to our error (wrong, defective, or
+  damaged item).
+- Refunds are issued to the original payment method within 5-7 business days
+  after the returned item passes inspection.
+- Cash-on-delivery orders are refunded by bank transfer; the customer must
+  provide valid bank details to our team through the secure form, never over
+  chat.
+ 
+Refund approval limits:
+- Refunds of Rs. 2,000 or less may be approved by the support agent when the
+  return meets the policy above.
+- Refunds ABOVE Rs. 2,000 (i.e. more than Rs. 2,000, which is 200,000 paise)
+  REQUIRE HUMAN ESCALATION. The support agent must not approve or promise
+  these refunds. Instead, create an escalation, tell the customer that a
+  member of our team will review the request, and give a response time of
+  1-2 business days.
+- Escalation also applies when a case falls outside this policy, such as
+  returns after 30 days, suspected fraud, repeated refund requests, or
+  customer disputes the agent cannot resolve.
+ 
+------------------------------------------------------------
+5. EXCHANGES
+------------------------------------------------------------
+- Exchanges for a different size or colour are available within the same
+  30-day window, subject to stock. If the replacement is unavailable, a
+  refund is issued under Section 4.
+ 
+------------------------------------------------------------
+6. CONTACT
+------------------------------------------------------------
+- Email: support@example-store.in
+- Support hours: Monday to Saturday, 10:00 AM - 7:00 PM IST
+ 
