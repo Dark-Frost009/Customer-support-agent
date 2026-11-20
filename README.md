@@ -4,7 +4,7 @@
 
 A production-style customer support backend for an Indian e-commerce store. Customers chat in plain language; an OpenAI model looks up orders, answers policy questions, cancels orders and files returns through tools — while **every business rule is enforced in Python, not in the prompt**.
 
-Built with FastAPI, raw `sqlite3`, the OpenAI SDK (function calling, no LangChain), and Pydantic v2. 65 offline tests cover the guardrails, a real-model eval suite checks the LLM's behaviour, and it ships as a Docker image with CI on every push.
+Built with FastAPI, raw `sqlite3`, the OpenAI SDK (function calling, no LangChain), and Pydantic v2. 77 offline tests cover the guardrails, a real-model eval suite checks the LLM's behaviour, and it ships as a Docker image with CI on every push.
 
 ---
 
@@ -17,7 +17,7 @@ Most LLM agent demos trust the model to follow its instructions. This one assume
 | **Ownership** — a customer can only see and act on their own orders | `customer_id` comes from the auth token and is injected by Python. It isn't in any tool schema, extra arguments are rejected, and every order query includes `AND customer_id = ?`. |
 | **Refund limit** — refunds above ₹2,000 need a human | The return tool computes the refund in integer paise and, above 200,000 paise, files it as *requested* and creates an escalation **in the same DB transaction**. The model can't approve it or skip the escalation. |
 | **Confirmation** — nothing changes without the customer saying yes | Cancel/return run in two steps: a preview issues a single-use token tied to the exact action, redeemable only on a *later* customer turn. "Can I cancel order 5?" alone can't cancel anything. |
-| **Error budget** — repeated failures go to a human | If the same tool fails twice in a session, Python creates the escalation itself. |
+| **Error budget** — repeated failures go to a human | If the same tool fails twice in a session, Python creates the escalation itself. Correct policy refusals ("past the 30-day window") don't count; invalid requests, system errors and repeated requests for other customers' orders do. |
 | **Return policy** — 30-day window, non-returnable items, 7-day defect reports | Checked in `guardrails.py` before any write. |
 | **No raw SQL from the LLM** | Tools are plain Python functions with fixed, parameterised queries. The model only supplies validated, typed values. |
 | **Resilience** — OpenAI timeouts, rate limits and outages | Each call has a timeout and up to 3 retries with exponential back-off. If the model still fails, the customer gets a fallback reply — and if a cancel, return or escalation already went through that turn, Python tells them so, so they don't retry and duplicate it. |
@@ -45,7 +45,8 @@ The model decides *what* to do; Python decides *whether it's allowed*.
 ```
 support_agent/
 ├── app/
-│   ├── main.py         # FastAPI app, bearer-token auth, /chat and /health
+│   ├── main.py         # FastAPI app, bearer-token auth, /chat, /health, chat page
+│   ├── static/         # index.html: the browser chat page (single file, no build step)
 │   ├── agent.py        # OpenAI function-calling loop, system prompt, sessions
 │   ├── tools.py        # Tool functions + dispatcher (injects customer_id)
 │   ├── guardrails.py   # All business rules and limits
@@ -55,7 +56,7 @@ support_agent/
 │   ├── seed.py         # Deterministic demo data with test scenarios
 │   ├── schema.sql      # Database schema (money stored as integer paise)
 │   └── policy.txt      # Store policy (source for search_policy)
-├── tests/              # 65 offline tests (no API key needed)
+├── tests/              # 77 offline tests (no API key needed)
 ├── evals/              # Real-model eval suite (17 scripted conversations)
 ├── Dockerfile          # Production image (non-root, healthcheck, data volume)
 ├── docker-compose.yml
@@ -88,7 +89,7 @@ echo OPENAI_API_KEY=sk-... > .env
 docker compose up --build
 ```
 
-The container seeds demo data and builds the policy index on first start; data is kept in a volume across restarts. Then open http://127.0.0.1:8000/docs.
+The container seeds demo data and builds the policy index on first start; data is kept in a volume across restarts. Then open http://127.0.0.1:8000/.
 
 **Terminal chat** (quickest way to try it):
 
@@ -103,7 +104,9 @@ python agent.py --customer 1
 uvicorn main:app --app-dir app --reload
 ```
 
-Open http://127.0.0.1:8000/docs → **Authorize** with a demo token → try `POST /chat`:
+Open **http://127.0.0.1:8000/** for the chat page: pick a demo customer, click a suggested question or type your own. Under each reply, a strip shows what the server actually did: orders looked up, previews awaiting confirmation, actions blocked by a guardrail, and tickets opened for the support team.
+
+For the raw API, open http://127.0.0.1:8000/docs → **Authorize** with a demo token → try `POST /chat`:
 
 ```json
 {"message": "Where is my order 4?"}
@@ -116,7 +119,7 @@ Send the returned `session_id` with follow-up messages to continue the conversat
 | `demo-priya` | Priya Sharma (id 1) | Every scenario: small refund, ₹4,499 refund, expired window, shipped, cancellable, non-returnable |
 | `demo-rahul` | Rahul Verma (id 2) | Orders 8 and 9 — try reading them as Priya to test ownership |
 
-The tokens are a development stand-in; replace `get_current_customer` in `main.py` with real authentication.
+The tokens are a development stand-in; replace `get_current_customer` in `main.py` with real authentication. The chat page reads the demo logins from `/demo/customers`; set `DEMO_MODE=0` to turn that endpoint off.
 
 ## Example conversation
 
@@ -135,7 +138,7 @@ The tokens are a development stand-in; replace `get_current_customer` in `main.p
 python -m pytest
 ```
 
-65 tests run in about a second, fully offline: the chat model is a scripted fake that deliberately misbehaves (confirming in the same turn, looping forever, injecting `customer_id`) to show that Python stops it. Each test gets a freshly seeded temporary database. CI runs them on every push.
+77 tests run in about a second, fully offline: the chat model is a scripted fake that deliberately misbehaves (confirming in the same turn, looping forever, injecting `customer_id`) to show that Python stops it. Each test gets a freshly seeded temporary database. CI runs them on every push.
 
 | File | Covers |
 |---|---|
@@ -144,6 +147,7 @@ python -m pytest
 | `test_agent.py` | Confirmation enforced against an eager model, loop cap, session binding |
 | `test_api.py` | Auth, `customer_id` in body rejected, session hijacking (403), unexpected errors (503) |
 | `test_resilience.py` | SDK retries on 503s, timeouts give fallback replies, completed actions are reported, history stays valid |
+| `test_chat_page.py` | Chat page served at `/`, demo logins (and `DEMO_MODE=0`), per-tool events for previews, blocks and tickets |
 | `test_evals_harness.py` | The eval scorer itself: good behaviour passes, leaks and skipped confirmations fail |
 
 ## Evals (real model)

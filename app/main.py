@@ -4,8 +4,8 @@ main.py — FastAPI entry point.
 Run from the project root:
     uvicorn main:app --app-dir app --reload
 
-Then open http://127.0.0.1:8000/docs, click "Authorize", enter a demo token
-(e.g. `demo-priya`), and try POST /chat.
+Then open http://127.0.0.1:8000/ for the chat page, or /docs for the raw API
+(click "Authorize", enter a demo token such as `demo-priya`, try POST /chat).
 
 Authentication
 --------------
@@ -25,15 +25,17 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import rag
 from agent import SessionError, SessionStore, SupportAgent
 from db import get_db, init_db
-from schemas import ChatRequest, ChatResponse
+from schemas import ChatRequest, ChatResponse, ToolEvent
 
 log = logging.getLogger("support_agent")
 
@@ -41,6 +43,12 @@ log = logging.getLogger("support_agent")
 DEMO_TOKENS: dict[str, int] = json.loads(
     os.getenv("DEMO_TOKENS", '{"demo-priya": 1, "demo-rahul": 2, "demo-ananya": 3}')
 )
+
+# The chat page needs to know the demo logins. Exposing tokens over HTTP is only
+# acceptable because they're throwaway demo credentials; set DEMO_MODE=0 (and
+# replace the token table with real auth) for any real deployment.
+DEMO_MODE: bool = os.getenv("DEMO_MODE", "1") != "0"
+CHAT_PAGE = Path(__file__).resolve().parent / "static" / "index.html"
 
 bearer = HTTPBearer(auto_error=False)
 sessions = SessionStore()
@@ -50,6 +58,8 @@ agent = SupportAgent()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()  # creates the schema if missing; never wipes data
+    if not os.getenv("OPENAI_API_KEY"):
+        log.warning("OPENAI_API_KEY is not set; chat requests will fail until it is.")
     if not rag.INDEX_PATH.exists():
         log.warning("Policy index not found; run `python app/rag.py build` before chatting.")
     yield
@@ -83,7 +93,11 @@ def get_current_customer(
 # --------------------------------------------------------------------------- #
 @app.get("/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "policy_index": rag.INDEX_PATH.exists()}
+    return {
+        "status": "ok",
+        "policy_index": rag.INDEX_PATH.exists(),
+        "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -102,10 +116,14 @@ def chat(req: ChatRequest, customer_id: int = Depends(get_current_customer)) -> 
         # Drop the unanswered user message so a retry doesn't send it twice.
         if session.messages and session.messages[-1].get("role") == "user":
             session.messages.pop()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The assistant is temporarily unavailable. Please try again shortly.",
-        ) from exc
+        # The most common setup mistake gets a specific message instead of a
+        # generic one. (OpenAI outages never reach here: the agent handles them.)
+        detail = (
+            "No OpenAI API key is configured on the server. Set OPENAI_API_KEY and restart it."
+            if not os.getenv("OPENAI_API_KEY")
+            else "The assistant is temporarily unavailable. Please try again shortly."
+        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail) from exc
 
     return ChatResponse(
         session_id=session.session_id,
@@ -114,10 +132,25 @@ def chat(req: ChatRequest, customer_id: int = Depends(get_current_customer)) -> 
         escalation_id=out.escalation_id,
         tools_called=out.tools_called,
         degraded=out.degraded,
+        events=[ToolEvent(**e) for e in out.events],
     )
 
-from fastapi.responses import RedirectResponse
 
 @app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse("/docs")
+def chat_page() -> FileResponse:
+    """The browser chat page (a single self-contained HTML file)."""
+    return FileResponse(CHAT_PAGE, media_type="text/html")
+
+
+@app.get("/demo/customers", include_in_schema=False)
+def demo_customers() -> list[dict[str, object]]:
+    """Demo logins for the chat page's customer switcher. Disabled when DEMO_MODE=0."""
+    if not DEMO_MODE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+    with get_db() as conn:
+        out = []
+        for token, cid in DEMO_TOKENS.items():
+            row = conn.execute("SELECT name, city FROM customers WHERE id = ?", (cid,)).fetchone()
+            if row:
+                out.append({"token": token, "customer_id": cid, "name": row["name"], "city": row["city"]})
+    return out

@@ -168,6 +168,17 @@ class ChatRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
 
 
+class ToolEvent(BaseModel):
+    """What one tool call did: shown in the chat page under each reply."""
+
+    tool: str
+    ok: bool
+    preview: bool = False          # a cancel/return preview awaiting confirmation
+    error_code: str | None = None  # set when a guardrail or validation refused it
+    order_id: int | None = None
+    escalation_id: int | None = None
+
+
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
@@ -176,3 +187,4 @@ class ChatResponse(BaseModel):
     tools_called: list[str] = Field(default_factory=list)
     # True when the model was unavailable and the reply is a safe fallback.
     degraded: bool = False
+    events: list[ToolEvent] = Field(default_factory=list)

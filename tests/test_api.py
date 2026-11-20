@@ -71,3 +71,11 @@ def test_model_outage_returns_503_and_keeps_history_clean(client):
     r = client.post("/chat", json={"message": "hello?", "session_id": sid}, headers=PRIYA_AUTH)
     assert r.status_code == 503
     assert len(session.messages) == before  # failed message not left dangling
+
+def test_missing_api_key_gives_a_specific_message(client, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(main.agent, "_client", None)  # force the real client to be built
+    r = client.post("/chat", json={"message": "hi"}, headers=PRIYA_AUTH)
+    assert r.status_code == 503
+    assert "OPENAI_API_KEY" in r.json()["detail"]
+    assert client.get("/health").json()["openai_key_configured"] is False

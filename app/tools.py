@@ -459,7 +459,7 @@ def dispatch_tool(
     result = _run(name, raw_arguments, customer_id=customer_id, db_path=db_path,
                   gate=gate, user_turn=user_turn)
 
-    if not result.ok and tracker.record_error(name):
+    if not result.ok and tracker.record_error(name, result.error_code):
         try:
             _, esc_id = escalate_to_human(
                 customer_id,

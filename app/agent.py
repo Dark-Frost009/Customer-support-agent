@@ -32,6 +32,7 @@ Where safety lives
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -168,6 +169,26 @@ class AgentReply:
     tools_called: list[str]
     escalation_id: int | None
     degraded: bool = False   # True when the model failed and Python wrote the reply
+    # One entry per tool call: what ran, whether it was allowed, and whether it
+    # was only a preview. Lets a UI show the guardrails at work.
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _tool_event(name: str, raw_args: str, result: Any) -> dict[str, Any]:
+    """Summarise a tool call for display. Contains no tool output beyond status."""
+    try:
+        order_id = json.loads(raw_args or "{}").get("order_id")
+    except (ValueError, AttributeError):
+        order_id = None
+    data = result.data if isinstance(result.data, dict) else {}
+    return {
+        "tool": name,
+        "ok": result.ok,
+        "preview": bool(data.get("requires_confirmation")),
+        "error_code": result.error_code,
+        "order_id": order_id if isinstance(order_id, int) else None,
+        "escalation_id": result.escalation_id or data.get("escalation_id"),
+    }
 
 
 UNAVAILABLE_REPLY = (
@@ -277,6 +298,7 @@ class SupportAgent:
         completed: list[tuple[str, dict[str, Any]]],
         tools_called: list[str],
         escalation_id: int | None,
+        events: list[dict[str, Any]],
     ) -> AgentReply:
         if not tools_called and session.messages and session.messages[-1]["role"] == "user":
             # Nothing happened this turn: drop the unanswered message so a
@@ -291,6 +313,7 @@ class SupportAgent:
             tools_called=tools_called,
             escalation_id=escalation_id,
             degraded=True,
+            events=events,
         )
 
     # ------------------------------------------------------------------ #
@@ -309,6 +332,7 @@ class SupportAgent:
         tools_called: list[str] = []
         new_escalation: int | None = None
         completed: list[tuple[str, dict[str, Any]]] = []  # write actions done this turn
+        events: list[dict[str, Any]] = []
 
         for _ in range(MAX_TOOL_ROUNDS):
             try:
@@ -323,7 +347,7 @@ class SupportAgent:
                 # Reached only after the SDK's own retries are exhausted
                 # (timeout, rate limit, outage, bad key...).
                 log.exception("OpenAI call failed for session %s", session.session_id)
-                return self._degraded(session, completed, tools_called, new_escalation)
+                return self._degraded(session, completed, tools_called, new_escalation, events)
             msg = response.choices[0].message
             session.messages.append(self._assistant_to_dict(msg))
 
@@ -332,6 +356,7 @@ class SupportAgent:
                     reply=msg.content or "",
                     tools_called=tools_called,
                     escalation_id=new_escalation,
+                    events=events,
                 )
 
             for tc in msg.tool_calls:
@@ -348,6 +373,7 @@ class SupportAgent:
                     user_turn=session.user_turn,
                     db_path=self.db_path,
                 )
+                events.append(_tool_event(name, tc.function.arguments, result))
                 if (result.ok and name in WRITE_TOOLS and isinstance(result.data, dict)
                         and not result.data.get("requires_confirmation")):
                     completed.append((name, result.data))
@@ -382,7 +408,8 @@ class SupportAgent:
             "support team, and someone will get back to you within 1-2 business days."
         )
         session.messages.append({"role": "assistant", "content": reply})
-        return AgentReply(reply=reply, tools_called=tools_called, escalation_id=esc_id)
+        return AgentReply(reply=reply, tools_called=tools_called, escalation_id=esc_id,
+                          events=events)
 
 
 if __name__ == "__main__":

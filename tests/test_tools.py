@@ -176,6 +176,17 @@ class TestErrorBudget:
         assert _row("SELECT COUNT(*) FROM escalations WHERE customer_id = ?", PRIYA)[0] == 1
 
 
+    def test_correct_policy_refusals_do_not_open_a_ticket(self, call):
+        tracker = ErrorTracker()
+        first = call("request_return", {"order_id": ORDER_OLD, "order_item_id": ITEM_OLD,
+                                        "reason": "changed mind"}, tracker=tracker)
+        second = call("request_return", {"order_id": ORDER_NONRETURN, "order_item_id": ITEM_BRIEFS,
+                                         "reason": "don't like them"}, tracker=tracker)
+        assert (first.error_code, second.error_code) == ("RETURN_WINDOW_EXPIRED", "NOT_RETURNABLE")
+        assert first.escalation_id is None and second.escalation_id is None
+        assert _row("SELECT COUNT(*) FROM escalations WHERE customer_id = ?", PRIYA)[0] == 0
+
+
 class TestReadTools:
     def test_list_orders_includes_product_names(self, call):
         orders = {o["order_id"]: o for o in call("list_orders", {}).data["orders"]}

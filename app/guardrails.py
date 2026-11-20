@@ -232,15 +232,29 @@ class ConfirmationGate:
 # --------------------------------------------------------------------------- #
 # 5. Error budget
 # --------------------------------------------------------------------------- #
+# Correct "no" answers from the store policy. They are the system working, not
+# failing, so they don't count toward the error budget: a customer who is
+# rightly told twice that an item is past its return window doesn't need a
+# ticket. (If they dispute it, the prompt tells the model to escalate.)
+POLICY_REFUSALS: frozenset[str] = frozenset({
+    "NOT_CANCELLABLE", "ALREADY_CANCELLED", "RETURN_WINDOW_EXPIRED", "NOT_RETURNABLE",
+    "NOT_DELIVERED", "DEFECT_REPORT_LATE", "QUANTITY_EXCEEDED",
+})
+
+
 @dataclass
 class ErrorTracker:
     """
     Counts tool failures per session.
 
     Interpretation of "a tool returns an error twice": the *same* tool failing
-    twice in one conversation. That catches a model stuck retrying (e.g. the
-    customer keeps giving an order ID that isn't theirs) without escalating
-    just because two unrelated lookups each hit one typo.
+    twice in one conversation. That catches a model stuck retrying without
+    escalating just because two unrelated lookups each hit one typo.
+
+    What counts as a failure: invalid requests, system errors, skipped or
+    mismatched confirmations, and ORDER_NOT_FOUND, because repeatedly asking
+    for orders that aren't yours is worth a human look. Policy refusals
+    (POLICY_REFUSALS) don't count.
 
     Lives in Python session state, not in the prompt, so the model can't
     "forget" how many times it has failed.
@@ -250,8 +264,10 @@ class ErrorTracker:
     counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     escalated: bool = False
 
-    def record_error(self, tool_name: str) -> bool:
+    def record_error(self, tool_name: str, error_code: str | None = None) -> bool:
         """Record a failure; return True exactly once, when the budget is exhausted."""
+        if error_code in POLICY_REFUSALS:
+            return False
         self.counts[tool_name] += 1
         if self.counts[tool_name] >= self.max_errors and not self.escalated:
             self.escalated = True

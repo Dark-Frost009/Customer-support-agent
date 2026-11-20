@@ -69,3 +69,15 @@ class TestConfirmationGate:
         with pytest.raises(GuardrailViolation) as exc:
             gate.redeem(token, tool, key, turn=2)
         assert exc.value.code == "CONFIRMATION_INVALID"
+
+class TestPolicyRefusalsDontCount:
+    def test_policy_refusal_is_not_an_error(self):
+        t = ErrorTracker()
+        assert t.record_error("request_return", "RETURN_WINDOW_EXPIRED") is False
+        assert t.record_error("request_return", "NOT_RETURNABLE") is False
+        assert t.counts["request_return"] == 0
+
+    def test_probing_other_orders_still_counts(self):
+        t = ErrorTracker()
+        t.record_error("get_order", "ORDER_NOT_FOUND")
+        assert t.record_error("get_order", "ORDER_NOT_FOUND") is True
