@@ -6,6 +6,8 @@ A production-style customer support backend for an Indian e-commerce store. Cust
 
 Built with FastAPI, raw `sqlite3`, the OpenAI SDK (function calling, no LangChain), and Pydantic v2. 77 offline tests cover the guardrails, a real-model eval suite checks the LLM's behaviour, and it ships as a Docker image with CI on every push.
 
+![The chat page: a request for another customer's order is blocked, and a return past the 30-day window is refused. Real gpt-4o-mini replies.](docs/chat.png)
+
 ---
 
 ## Why this project
